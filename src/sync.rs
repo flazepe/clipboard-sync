@@ -28,8 +28,13 @@ pub fn get_clipboards() -> MyResult<Vec<Box<dyn Clipboard>>> {
             let cb1 = &clipboards[i];
             for (j, cb2) in clipboards.iter().enumerate().take(len).skip(i + 1) {
                 if are_same(&**cb1, &**cb2)? {
-                    log::debug!("{cb1:?} is the same as {cb2:?}, removing {cb2:?}");
-                    remove_me.insert(j);
+                    if cb1.rank() < cb2.rank() {
+                        log::debug!("dupe detected: {cb1:?} == {cb2:?} -> removing {cb2:?}");
+                        remove_me.insert(j);
+                    } else {
+                        log::debug!("dupe detected: {cb1:?} == {cb2:?} -> removing {cb1:?}");
+                        remove_me.insert(i);
+                    }
                 }
             }
         }
@@ -208,8 +213,22 @@ fn get_wayland(n: u8) -> MyResult<Option<Box<dyn Clipboard>>> {
         version: 1,
     })) = attempt
     {
-        log::warning!("{wl_display} does not support zwlr_data_control_manager_v1. If you are running gnome in wayland, that's OK because it provides an x11 clipboard, which will be used instead.");
-        return Ok(None);
+        log::warning!(
+            "{wl_display} does not support zwlr_data_control_manager_v1. If you are running \
+gnome in wayland, that's OK because it provides an x11 clipboard, which will be used instead. \
+Otherwise, `wl-copy` will be used to sync data *into* this clipboard, but it will not be possible \
+to read data *from* this clipboard into other clipboards."
+        );
+        let command = WlCommandClipboard {
+            display: wl_display.clone(),
+        };
+        let Ok(gotten) = command.get() else {
+            return Ok(None);
+        };
+        let Ok(_) = command.set(&gotten) else {
+            return Ok(None);
+        };
+        return Ok(Some(Box::new(command)));
     }
     attempt?;
 
@@ -228,6 +247,9 @@ fn await_change(clipboards: &Vec<Box<dyn Clipboard>>) -> MyResult<String> {
     let start = clipboards[0].get()?;
     loop {
         for c in clipboards {
+            if !c.should_poll() {
+                continue;
+            }
             let new = c.get()?;
             if new != start {
                 log::info!("clipboard updated from display {}", c.display());

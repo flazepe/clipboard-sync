@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::{env, io::Read, process::Command, thread::sleep, time::Duration};
+use std::{env, io::Read, process::Command};
 use terminal_clipboard::Clipboard as TerminalClipboard;
 use wl_clipboard_rs::copy::{MimeType as CopyMimeType, Options, Source};
 use wl_clipboard_rs::paste::{
@@ -11,17 +11,17 @@ use crate::error::{Generify, MyResult, Standardize};
 
 pub trait Clipboard: std::fmt::Debug {
     fn display(&self) -> String;
+
     fn get(&self) -> MyResult<String>;
+
     fn set(&self, value: &str) -> MyResult<()>;
-    fn watch(&self) -> MyResult<String> {
-        let start = self.get()?;
-        loop {
-            let now = self.get()?;
-            if now != start {
-                return Ok(now);
-            }
-            sleep(Duration::from_millis(1000));
-        }
+
+    fn should_poll(&self) -> bool {
+        true
+    }
+
+    fn rank(&self) -> u8 {
+        100
     }
 }
 
@@ -36,6 +36,14 @@ impl<T: Clipboard> Clipboard for Box<T> {
 
     fn display(&self) -> String {
         (**self).display()
+    }
+
+    fn should_poll(&self) -> bool {
+        (**self).should_poll()
+    }
+
+    fn rank(&self) -> u8 {
+        (**self).rank()
     }
 }
 
@@ -84,29 +92,44 @@ impl Clipboard for WlrClipboard {
 
         Ok(result.standardize().generify()??)
     }
+
+    fn rank(&self) -> u8 {
+        10
+    }
 }
 
 #[derive(Debug)]
-pub struct CommandClipboard {
-    display: String,
+pub struct WlCommandClipboard {
+    pub display: String,
 }
 
-impl Clipboard for CommandClipboard {
+impl Clipboard for WlCommandClipboard {
     fn display(&self) -> String {
         self.display.clone()
     }
 
     fn get(&self) -> MyResult<String> {
-        env::set_var("WAYLAND_DISPLAY", self.display.clone());
-        let out = Command::new("wl-paste").output()?.stdout;
+        let out = Command::new("wl-paste")
+            .env("WAYLAND_DISPLAY", &self.display)
+            .output()?
+            .stdout;
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
 
     fn set(&self, value: &str) -> MyResult<()> {
-        env::set_var("WAYLAND_DISPLAY", self.display.clone());
-        Command::new("wl-copy").arg(value).spawn()?;
-
+        Command::new("wl-copy")
+            .arg(value)
+            .env("WAYLAND_DISPLAY", &self.display)
+            .spawn()?;
         Ok(())
+    }
+
+    fn should_poll(&self) -> bool {
+        false
+    }
+
+    fn rank(&self) -> u8 {
+        200
     }
 }
 
@@ -181,7 +204,6 @@ impl Clipboard for X11Clipboard {
     }
 
     fn get(&self) -> MyResult<String> {
-        // env::set_var("DISPLAY", self.display.clone());
         Ok(self
             .backend
             .0
@@ -191,7 +213,6 @@ impl Clipboard for X11Clipboard {
     }
 
     fn set(&self, value: &str) -> MyResult<()> {
-        // env::set_var("DISPLAY", self.display.clone());
         self.backend
             .0
             .try_borrow_mut()?
