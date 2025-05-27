@@ -1,260 +1,97 @@
-use chrono::Local;
-use std::collections::HashSet;
-use std::{thread::sleep, time::Duration};
-use wayland_client::ConnectError;
-use wl_clipboard_rs::paste::Error as PasteError;
+use crate::clipboard::{Clipboard, WlClipboard, X11Clipboard};
+use anyhow::{Result, bail};
+use std::{env::set_var, thread::sleep, time::Duration};
 
-use crate::clipboard::*;
-use crate::error::{MyError, MyResult, StandardizedError};
-use crate::log::{self, concise_numbers};
+pub fn get_clipboards() -> Result<Vec<Box<dyn Clipboard>>> {
+    let clipboards = vec![
+        get_clipboard(get_wayland_clipboard)?,
+        get_clipboard(get_x11_clipboard)?,
+    ];
 
-pub fn get_clipboards() -> MyResult<Vec<Box<dyn Clipboard>>> {
-    log::debug!("identifying unique clipboards...");
-    let mut clipboards = get_clipboards_spec(get_wayland);
-    // let x11_backend = X11Backend::new()?;
-    clipboards.extend(get_clipboards_spec(get_x11));
+    println!("Clipboards found!");
 
-    let start = clipboards
+    let initial_value = clipboards
         .iter()
-        .map(|c| c.get().unwrap_or_default())
-        .find(|s| !s.is_empty())
+        .map(|clipboard| clipboard.get().unwrap_or_default())
+        .find(|string| !string.is_empty())
         .unwrap_or_default();
-    log::sensitive!(log::info, "Clipboard contents at the start: '{start}'");
 
-    let mut remove_me = HashSet::new();
-    let len = clipboards.len();
-    for i in 0..clipboards.len() {
-        if !remove_me.contains(&i) {
-            let cb1 = &clipboards[i];
-            for (j, cb2) in clipboards.iter().enumerate().take(len).skip(i + 1) {
-                if are_same(&**cb1, &**cb2)? {
-                    if cb1.rank() < cb2.rank() {
-                        log::debug!("dupe detected: {cb1:?} == {cb2:?} -> removing {cb2:?}");
-                        remove_me.insert(j);
-                    } else {
-                        log::debug!("dupe detected: {cb1:?} == {cb2:?} -> removing {cb1:?}");
-                        remove_me.insert(i);
-                    }
-                }
-            }
-        }
+    // println!("Initial clipboard contents: '{initial_value}'");
+
+    for clipboard in &clipboards {
+        clipboard.set(&initial_value)?;
     }
-
-    let clipboards = clipboards
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| !remove_me.contains(i))
-        .map(|(_, c)| c)
-        .collect::<Vec<Box<dyn Clipboard>>>();
-
-    // let clipboards = dedupe(clipboards)?;
-
-    for c in clipboards.iter() {
-        c.set(&start)?;
-    }
-
-    log::info!("Using clipboards: {:?}", clipboards);
 
     Ok(clipboards)
 }
 
-pub fn keep_synced(clipboards: &Vec<Box<dyn Clipboard>>) -> MyResult<()> {
-    if clipboards.is_empty() {
-        return Err(MyError::NoClipboards);
-    }
-    loop {
-        sleep(Duration::from_millis(100));
-        let new_value = await_change(clipboards)?;
-        for c in clipboards {
-            c.set(&new_value)?;
-        }
-    }
-}
-
-fn are_same(one: &dyn Clipboard, two: &dyn Clipboard) -> MyResult<bool> {
-    let d1 = &one.display();
-    let d2 = &two.display();
-    one.set(d1)?;
-    if d1 != &two.get()? {
-        return Ok(false);
-    }
-    two.set(d2)?;
-    if d2 != &one.get()? {
-        return Ok(false);
+fn get_clipboard<T: Fn(Option<u8>) -> Result<Box<dyn Clipboard>>>(
+    clipboard_fn: T,
+) -> Result<Box<dyn Clipboard>> {
+    if let Ok(clipboard) = clipboard_fn(None) {
+        return Ok(clipboard);
     }
 
-    Ok(true)
-}
+    println!("Display environment variable not found. Attempting to detect display...");
 
-// /// equality comparison is the bottleneck, and it's composed of two steps. so
-// /// the purpose of this function is to minimize the number of executions of
-// /// those steps. to do so, these steps are run at different times and combined
-// /// at the end. this requires some extra computation in here but that's fine.
-// fn dedupe(clipboards: Vec<Box<dyn Clipboard>>) -> MyResult<Vec<Box<dyn Clipboard>>> {
-//     let mut k_cant_read_v: HashMap<usize, HashSet<usize>> = HashMap::new();
-//     let mut k_can_read_v: HashMap<usize, HashSet<usize>> = HashMap::new();
-//     for (i, one) in clipboards.iter().enumerate() {
-//         // let i_can_read = k_can_read_v.entry(i).or_insert(HashSet::new()).clone();
-//         let i_cant_read = k_cant_read_v.entry(i).or_insert(HashSet::new()).clone();
-//         let d1 = &one.display();
-//         one.set(d1)?;
-//         for (j, two) in clipboards.iter().enumerate() {
-//             println!("{i} {j} {} {}", i != j, !i_cant_read.contains(&j));
-//             if i != j && !i_cant_read.contains(&j) {
-//                 if d1 == &two.get()? {
-//                     log::debug!("{two:?} can read {one:?}");
-//                     k_can_read_v.entry(j).or_insert(HashSet::new()).insert(i);
-//                 } else {
-//                     log::debug!("{two:?} cannot read {one:?}");
-//                     k_cant_read_v.entry(j).or_insert(HashSet::new()).insert(i);
-//                 }
-//             }
-//         }
-//     }
-//     let mut remove_me: HashSet<usize> = HashSet::new();
-//     let mut dont_remove_me: HashSet<usize> = HashSet::new();
-//     println!("{k_cant_read_v:#?}");
-//     println!("{k_can_read_v:#?}");
-//     for (k, v) in k_can_read_v.iter() {
-//         for readable in v {
-//             if !dont_remove_me.contains(readable)
-//                 && k_can_read_v
-//                     .get(readable)
-//                     .map(|what_readable_can_read| what_readable_can_read.contains(k))
-//                     .unwrap_or(false)
-//             {
-//                 remove_me.insert(*readable);
-//                 dont_remove_me.insert(*k);
-//             }
-//         }
-//     }
-
-//     Ok(clipboards
-//         .into_iter()
-//         .enumerate()
-//         .filter(|(i, _)| !remove_me.contains(i))
-//         .map(|(_, c)| c)
-//         .collect::<Vec<Box<dyn Clipboard>>>())
-// }
-
-// /// equality comparison is the bottleneck, and it's composed of two steps. so
-// /// the purpose of this function is to minimize the number of executions of
-// /// those steps. to do so, these steps are run at different times and combined
-// /// at the end. this requires some extra computation in here but that's fine.
-// fn dedupe(clipboards: Vec<Box<dyn Clipboard>>) -> MyResult<Vec<Box<dyn Clipboard>>> {
-//     for (i, clipboard) in clipboards.iter().enumerate() {
-//         println!("write {i}");
-//         clipboard.set(&format!("{}{i}", clipboard.get()?))?;
-//     }
-//     let mut results = HashMap::new();
-//     for (i, clipboard) in clipboards.iter().enumerate() {
-//         println!("read {i}");
-//         results.insert(i, clipboard.get()?);
-//     }
-
-//     todo!()
-// }
-
-fn get_clipboards_spec<F: Fn(u8) -> MyResult<Option<Box<dyn Clipboard>>>>(
-    getter: F,
-) -> Vec<Box<dyn Clipboard>> {
-    let mut clipboards: Vec<Box<dyn Clipboard>> = Vec::new();
-    let mut xcb_conn_err = None;
-    let mut xcb_conn_failed_clipboards = vec![];
     for i in 0..u8::MAX {
-        let result = getter(i);
-        match result {
-            Ok(option) => {
-                if let Some(clipboard) = option {
-                    log::debug!("Found clipboard: {:?}", clipboard);
-                    clipboards.push(clipboard);
-                }
-            }
-            Err(MyError::TerminalClipboard(StandardizedError {
-                inner,
-                stdio: None,
-            })) if format!("{inner}") == "clipboard error: X11 clipboard error : XCB connection error: Connection" => {
-                xcb_conn_failed_clipboards.push(i);
-                xcb_conn_err = Some(inner);
-            },
-            Err(err) => log::error!(
-                "unexpected error while attempting to setup clipboard {}: {}",
-                i,
-                err
-            ),
+        if let Ok(clipboard) = clipboard_fn(Some(i)) {
+            return Ok(clipboard);
         }
     }
-    if let Some(err) = xcb_conn_err {
-        let displays = concise_numbers(&xcb_conn_failed_clipboards);
-        log::warning!(
-            "Issue connecting to some x11 clipboards. \
-This is expected when hooking up to gnome wayland, and not a problem in that context. \
-Details: '{err}' for x11 displays: {displays}",
-        );
-    }
 
-    clipboards
+    bail!("Could not get Wayland/X11 clipboard.");
 }
 
-fn get_wayland(n: u8) -> MyResult<Option<Box<dyn Clipboard>>> {
-    let wl_display = format!("wayland-{}", n);
-    let clipboard = WlrClipboard {
-        display: wl_display.clone(),
-    };
-    let attempt = clipboard.get();
-    if let Err(MyError::WlcrsPaste(PasteError::WaylandConnection(
-        ConnectError::NoCompositorListening,
-    ))) = attempt
-    {
-        return Ok(None);
+fn get_wayland_clipboard(display: Option<u8>) -> Result<Box<dyn Clipboard>> {
+    if let Some(display) = display {
+        unsafe {
+            set_var("WAYLAND_DISPLAY", format!("wayland-{display}"));
+        }
     }
-    if let Err(MyError::WlcrsPaste(PasteError::MissingProtocol {
-        name: "zwlr_data_control_manager_v1",
-        version: 1,
-    })) = attempt
-    {
-        log::warning!(
-            "{wl_display} does not support zwlr_data_control_manager_v1. If you are running \
-gnome in wayland, that's OK because it provides an x11 clipboard, which will be used instead. \
-Otherwise, `wl-copy` will be used to sync data *into* this clipboard, but it will not be possible \
-to read data *from* this clipboard into other clipboards."
-        );
-        let command = WlCommandClipboard {
-            display: wl_display.clone(),
-        };
-        let Ok(gotten) = command.get() else {
-            return Ok(None);
-        };
-        let Ok(_) = command.set(&gotten) else {
-            return Ok(None);
-        };
-        return Ok(Some(Box::new(command)));
-    }
-    attempt?;
 
-    Ok(Some(Box::new(clipboard)))
-}
-
-fn get_x11(n: u8) -> MyResult<Option<Box<dyn Clipboard>>> {
-    let display = format!(":{}", n);
-    let clipboard = X11Clipboard::new(display)?;
+    let clipboard = WlClipboard;
     clipboard.get()?;
 
-    Ok(Some(Box::new(clipboard)))
+    Ok(Box::new(clipboard))
 }
 
-fn await_change(clipboards: &Vec<Box<dyn Clipboard>>) -> MyResult<String> {
-    let start = clipboards[0].get()?;
+fn get_x11_clipboard(display: Option<u8>) -> Result<Box<dyn Clipboard>> {
+    if let Some(display) = display {
+        unsafe {
+            set_var("DISPLAY", format!(":{display}"));
+        }
+    }
+
+    let clipboard = X11Clipboard::new()?;
+    clipboard.get()?;
+
+    Ok(Box::new(clipboard))
+}
+
+pub fn keep_synced(clipboards: &Vec<Box<dyn Clipboard>>) -> Result<()> {
     loop {
-        for c in clipboards {
-            if !c.should_poll() {
-                continue;
-            }
-            let new = c.get()?;
-            if new != start {
-                log::info!("clipboard updated from display {}", c.display());
-                log::sensitive!(log::info, "clipboard contents: '{}'", new);
-                return Ok(new);
+        sleep(Duration::from_millis(100));
+
+        let new_value = await_change(clipboards)?;
+
+        for clipboard in clipboards {
+            clipboard.set(&new_value)?;
+        }
+    }
+}
+
+fn await_change(clipboards: &Vec<Box<dyn Clipboard>>) -> Result<String> {
+    let initial_value = clipboards[0].get()?;
+
+    loop {
+        for clipboard in clipboards {
+            let new_value = clipboard.get()?;
+
+            if new_value != initial_value {
+                println!("Clipboard updated from the {clipboard} clipboard");
+                // println!("Clipboard contents: '{new_value}'");
+                return Ok(new_value);
             }
         }
         sleep(Duration::from_millis(200));

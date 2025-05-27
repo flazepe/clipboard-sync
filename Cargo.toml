@@ -2,25 +2,10 @@
 name = "clipboard-sync"
 description = " Synchronizes the clipboard across multiple X11 and wayland instances running on the same machine. "
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 
-[features]
-backtrace = []
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-wayland-client = "0.29.4"
-wl-clipboard-rs = "0.7.0"
-cli-clipboard = "0.2.0"
-arboard = "2.0.0"
-x11-clipboard = "0.5.3"
-terminal-clipboard = "0.3.1"
-nix = "0.23.1"
+wl-clipboard-rs = "0.9.2"
+terminal-clipboard = "0.4.1"
 anyhow = "1.0.44"
-thiserror = "1.0"
-chrono = "0.4"
-itertools = "0.10"
-gag = "1.0"
-clap = { version = "4.0.29", features = ["derive", "wrap_help"] }
