@@ -1,4 +1,4 @@
-use crate::clipboard::{Clipboard, WlClipboard, X11Clipboard};
+use crate::clipboard::{Clipboard, ClipboardContents, WlClipboard, X11Clipboard};
 use anyhow::{Result, bail};
 use std::{env::set_var, thread::sleep, time::Duration};
 
@@ -13,7 +13,7 @@ pub fn get_clipboards() -> Result<Vec<Box<dyn Clipboard>>> {
     let initial_value = clipboards
         .iter()
         .map(|clipboard| clipboard.get().unwrap_or_default())
-        .find(|string| !string.is_empty())
+        .find(|value| !value.contents.is_empty())
         .unwrap_or_default();
 
     // println!("Initial clipboard contents: '{initial_value}'");
@@ -40,7 +40,7 @@ fn get_clipboard<T: Fn(Option<u8>) -> Result<Box<dyn Clipboard>>>(
         }
     }
 
-    bail!("Could not get Wayland/X11 clipboard.");
+    bail!("Could not get Wayland/X11 clipboard");
 }
 
 fn get_wayland_clipboard(display: Option<u8>) -> Result<Box<dyn Clipboard>> {
@@ -81,14 +81,14 @@ pub fn keep_synced(clipboards: &Vec<Box<dyn Clipboard>>) -> Result<()> {
     }
 }
 
-fn await_change(clipboards: &Vec<Box<dyn Clipboard>>) -> Result<String> {
+fn await_change(clipboards: &Vec<Box<dyn Clipboard>>) -> Result<ClipboardContents> {
     let initial_value = clipboards[0].get()?;
 
     loop {
         for clipboard in clipboards {
             let new_value = clipboard.get()?;
 
-            if new_value != initial_value {
+            if new_value.contents != initial_value.contents {
                 println!("Clipboard updated from the {clipboard} clipboard");
                 // println!("Clipboard contents: '{new_value}'");
                 return Ok(new_value);

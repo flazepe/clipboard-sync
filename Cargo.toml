@@ -6,6 +6,6 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-wl-clipboard-rs = "0.9.2"
-terminal-clipboard = "0.4.1"
 anyhow = "1.0.44"
+wl-clipboard-rs = "0.9.2"
+x11-clipboard = "0.9.3"
